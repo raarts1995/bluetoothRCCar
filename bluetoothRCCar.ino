@@ -14,8 +14,11 @@
 #define motorR 6
 
 #define inputDataBuffer 32
-#define bluetooth Serial
-#define debug Serial
+#define bluetooth Serial1
+
+#define bluetoothTimeout 500 //ms
+
+bool bluetoothConnection = true;
 
 //data vb: M255,R0,S0,L1,Ih
 //M(otor):     pwm value (0 - 255)
@@ -66,7 +69,7 @@ void setup() {
   xTaskCreate(
     btTask, //task
     "Bluetooth", //task name
-    512, //stack size
+    256, //stack size
     NULL, //parameters
     3, //priority
     &btTaskHandle //task handle
@@ -75,7 +78,7 @@ void setup() {
   xTaskCreate(
     motorTask,
     "Motor",
-    256,
+    128,
     NULL,
     2,
     &motorTaskHandle
@@ -84,7 +87,7 @@ void setup() {
   xTaskCreate(
     steerTask,
     "Steer",
-    256,
+    128,
     NULL,
     2,
     &steerTaskHandle
@@ -93,7 +96,7 @@ void setup() {
   xTaskCreate(
     lightTask,
     "Light",
-    256,
+    128,
     NULL,
     1,
     &lightTaskHandle
@@ -115,19 +118,13 @@ void loop() {
 void motorTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
-#ifdef debug
-      debug.print("Motor: ");
-      debug.print(motorData.speed);
-      debug.print(", reverse: ");
-      debug.println(motorData.direction);
-#endif
-      /*if(motorData.direction) {
-        analogWrite(driveF, 0);
-        analogWrite(driveR, motorData.speed);
+      if(motorData.direction) {
+        analogWrite(motorF, 0);
+        analogWrite(motorR, motorData.speed);
       } else {
-        analogWrite(driveF, motorData.speed);
-        analogWrite(driveR, 0);
-      }*/
+        analogWrite(motorF, motorData.speed);
+        analogWrite(motorR, 0);
+      }
     }
   }
 }
@@ -135,10 +132,6 @@ void motorTask(void *params) {
 void steerTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
-#ifdef debug
-      debug.print("Steer: 0x");
-      debug.println(steerData, HEX);
-#endif
       if (steerData == steerLeft) {
         digitalWrite(steerL, HIGH);
         digitalWrite(steerR, LOW);
@@ -161,7 +154,7 @@ void lightTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
       //handle indicators
-      blink = false;
+      blink = !bluetoothConnection; //blink is always on without bluetooth connection
       if (lightData & (indicatorLBit | hazardBit)) { //left indicator
         blink = true;
       }
@@ -187,11 +180,13 @@ void lightTask(void *params) {
           
           indicatorTimerTick(indicatorTimer); //call first time for immediate response
           if (!xTimerStart(indicatorTimer, 0)) {
+            ;
           }
         }
       }
       else { //indicators not used
         if (!xTimerStop(indicatorTimer, 0)) {
+          ;
         }
       }
     }
@@ -199,11 +194,11 @@ void lightTask(void *params) {
 }
 
 void indicatorTimerTick(TimerHandle_t tmr) {
-  if ((lightData & indicatorLBit) | (lightData & hazardBit)) {
+  if ((lightData & indicatorLBit) | (lightData & hazardBit) | !bluetoothConnection) {
     digitalWrite(headLightL, (lightData & indicatorState) == 0);
     digitalWrite(rearLightL, (lightData & indicatorState) == 0);
   }
-  if ((lightData & indicatorRBit) | (lightData & hazardBit)) {
+  if ((lightData & indicatorRBit) | (lightData & hazardBit) | !bluetoothConnection) {
     digitalWrite(headLightR, (lightData & indicatorState) == 0);
     digitalWrite(rearLightR, (lightData & indicatorState) == 0);
   }
@@ -215,14 +210,30 @@ void btTask(void *param) {
   unsigned long lastMsgTime = 0;
   
   while (true) {
-    checkData(dataIn);
-    vTaskDelay(200/portTICK_PERIOD_MS);
+    if (checkData(dataIn)) {
+      lastMsgTime = millis();
+      bluetoothConnection = true;
+    }
+    
+    if (((lastMsgTime + bluetoothTimeout) < millis()) && bluetoothConnection) {
+      bluetoothConnection = false;
+      motorData = {0, 0};
+      steerData = 0;
+      xTaskNotifyGive(motorTaskHandle);
+      xTaskNotifyGive(steerTaskHandle);
+      xTaskNotifyGive(lightTaskHandle);
+    }
+    
+    vTaskDelay(50/portTICK_PERIOD_MS);
   }
 }
 
-void checkData(char* dataIn) {
+bool checkData(char* dataIn) {
+  bool received = false;
   while (bluetooth.available()) {
+    received = true;
     char c = (char)bluetooth.read();
+    bluetooth.print(c);
     if (c == '\n') {
       parseData(dataIn);
       memset(dataIn, '\0', inputDataBuffer + 1);
@@ -234,7 +245,7 @@ void checkData(char* dataIn) {
         dataIn[inputDataBuffer] = c;
     }
   }
-  return dataIn;
+  return received;
 }
 
 void parseData(char* dataIn) {
