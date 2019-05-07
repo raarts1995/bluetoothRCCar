@@ -154,24 +154,7 @@ void lightTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
       //handle indicators
-      blink = !bluetoothConnection; //blink is always on without bluetooth connection
-      if (lightData & (indicatorLBit | hazardBit)) { //left indicator
-        blink = true;
-      }
-      else {
-        digitalWrite(headLightL, (lightData & lightStateBit) != 0);
-        digitalWrite(rearLightL, (lightData & lightStateBit) != 0);
-      }
-      
-      if (lightData & (indicatorRBit | hazardBit)) { //right indicator
-        blink = true;
-      }
-      else {
-        digitalWrite(headLightR, (lightData & lightStateBit) != 0);
-        digitalWrite(rearLightR, (lightData & lightStateBit) != 0);
-      }
-      
-      if (blink) {
+      if (!bluetoothConnection || (lightData & (indicatorLBit | hazardBit)) || (lightData & (indicatorRBit | hazardBit))) {
         if (!xTimerIsTimerActive(indicatorTimer)) { //start timer if not active
           if ((lightData & lightStateBit) != 0)
             lightData |= indicatorState; //turn on indicatorstatebit to immediately toggle indicator light when headlights are on
@@ -188,6 +171,10 @@ void lightTask(void *params) {
         if (!xTimerStop(indicatorTimer, 0)) {
           ;
         }
+        digitalWrite(headLightL, (lightData & lightStateBit) != 0);
+        digitalWrite(rearLightL, (lightData & lightStateBit) != 0);
+        digitalWrite(headLightR, (lightData & lightStateBit) != 0);
+        digitalWrite(rearLightR, (lightData & lightStateBit) != 0);
       }
     }
   }
