@@ -19,6 +19,7 @@
 #define bluetoothTimeout 500 //ms
 
 bool bluetoothConnection = true;
+bool emergency = false;
 
 //data vb: M255,R0,S0,L1,Ih
 //M(otor):     pwm value (0 - 255)
@@ -120,9 +121,9 @@ void motorTask(void *params) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
       if(motorData.direction) {
         analogWrite(motorF, 0);
-        analogWrite(motorR, motorData.speed);
+        analogWrite(motorR, (emergency ? 0 : motorData.speed));
       } else {
-        analogWrite(motorF, motorData.speed);
+        analogWrite(motorF, (emergency ? 0 : motorData.speed));
         analogWrite(motorR, 0);
       }
     }
@@ -132,11 +133,11 @@ void motorTask(void *params) {
 void steerTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
-      if (steerData == steerLeft) {
+      if ((steerData == steerLeft) && !emergency) {
         digitalWrite(steerL, HIGH);
         digitalWrite(steerR, LOW);
       }
-      else if (steerData == steerRight) {
+      else if (steerData == steerRight && !emergency) {
         digitalWrite(steerL, LOW);
         digitalWrite(steerR, HIGH);
       }
@@ -154,7 +155,7 @@ void lightTask(void *params) {
   while (true) {
     if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
       //handle indicators
-      if (!bluetoothConnection || (lightData & (indicatorLBit | hazardBit)) || (lightData & (indicatorRBit | hazardBit))) {
+      if (emergency || !bluetoothConnection || (lightData & (indicatorLBit | hazardBit)) || (lightData & (indicatorRBit | hazardBit))) {
         if (!xTimerIsTimerActive(indicatorTimer)) { //start timer if not active
           if ((lightData & lightStateBit) != 0)
             lightData |= indicatorState; //turn on indicatorstatebit to immediately toggle indicator light when headlights are on
@@ -162,6 +163,11 @@ void lightTask(void *params) {
             lightData &= ~indicatorState;
           
           indicatorTimerTick(indicatorTimer); //call first time for immediate response
+
+          int periodMs = (emergency ? 250 : 500);
+          if (xTimerChangePeriod(indicatorTimer, periodMs / portTICK_PERIOD_MS, 0))
+            ;
+          
           if (!xTimerStart(indicatorTimer, 0)) {
             ;
           }
@@ -181,11 +187,11 @@ void lightTask(void *params) {
 }
 
 void indicatorTimerTick(TimerHandle_t tmr) {
-  if ((lightData & indicatorLBit) | (lightData & hazardBit) | !bluetoothConnection) {
+  if ((lightData & indicatorLBit) | (lightData & hazardBit) | !bluetoothConnection | emergency) {
     digitalWrite(headLightL, (lightData & indicatorState) == 0);
     digitalWrite(rearLightL, (lightData & indicatorState) == 0);
   }
-  if ((lightData & indicatorRBit) | (lightData & hazardBit) | !bluetoothConnection) {
+  if ((lightData & indicatorRBit) | (lightData & hazardBit) | !bluetoothConnection | emergency) {
     digitalWrite(headLightR, (lightData & indicatorState) == 0);
     digitalWrite(rearLightR, (lightData & indicatorState) == 0);
   }
@@ -204,6 +210,7 @@ void btTask(void *param) {
     
     if (((lastMsgTime + bluetoothTimeout) < millis()) && bluetoothConnection) {
       bluetoothConnection = false;
+      emergency = false;
       motorData = {0, 0};
       steerData = 0;
       xTaskNotifyGive(motorTaskHandle);
@@ -300,6 +307,20 @@ void parseData(char* dataIn) {
             lightData &= ~(indicatorLBit | indicatorRBit | hazardBit);
             break;
         }
+        xTaskNotifyGive(lightTaskHandle);
+        break;
+
+      case 'E': //Emergency
+        if (tmp[1] == '1') //toggle emergency state
+          emergency ^= 1;
+        else //0 or unknown value: lights off
+          emergency = 0;
+
+        motorData = {0, 0};
+        steerData = 0;
+        lightData = 0;
+        xTaskNotifyGive(motorTaskHandle);
+        xTaskNotifyGive(steerTaskHandle);
         xTaskNotifyGive(lightTaskHandle);
         break;
         
